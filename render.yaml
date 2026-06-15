@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: syngenta-viz-api
+    env: python
+    plan: free
+    buildCommand: pip install fastapi uvicorn
+    startCommand: uvicorn cache_server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: CACHE_TTL_SECONDS
+        value: "1800"
+      - key: STREAMLIT_URL
+        value: "https://vivekm2305.streamlit.app"
