@@ -149,33 +149,112 @@ def _parse_payload():
 
 
 # ---------------------------------------------------------------------------
-# Chart renderer (legacy / optional)
+# Chart renderer — handles both config.chart and legacy _legacy_chart
 # ---------------------------------------------------------------------------
 
 def render_chart(df, chart_cfg, title):
-    chart_type = (chart_cfg.get("chartType") or "bar").lower()
+    # Normalise keys — config.chart uses "type", legacy uses "chartType"
+    chart_type = (chart_cfg.get("type") or chart_cfg.get("chartType") or "bar").lower()
     x_col = chart_cfg.get("x") or df.columns[0]
     numeric_cols = df.select_dtypes(include=["number"]).columns
-    y_col = chart_cfg.get("y") or (numeric_cols[0] if len(numeric_cols) > 0 else df.columns[1])
+
+    # y can be a list, a comma-separated string, or a plain string
+    y_raw = chart_cfg.get("y") or (list(numeric_cols) if len(numeric_cols) > 0 else [df.columns[1]])
+    if isinstance(y_raw, list):
+        y_cols = y_raw
+    elif isinstance(y_raw, str) and "," in y_raw:
+        y_cols = [c.strip() for c in y_raw.split(",")]
+    else:
+        y_cols = [y_raw]
+
+    # Single y column for chart types that don't support multiple series
+    y_single = y_cols[0]
+
+    size_col  = chart_cfg.get("size")   # bubble only
+    color_col = chart_cfg.get("color")  # optional colour dimension
+    hover_col = chart_cfg.get("hover")  # extra column shown on hover
 
     try:
         if chart_type == "bar":
-            fig = px.bar(df, x=x_col, y=y_col, title=title, color=x_col)
-        elif chart_type == "line":
-            fig = px.line(df, x=x_col, y=y_col, title=title)
-        elif chart_type == "pie":
-            fig = px.pie(df, names=x_col, values=y_col, title=title)
-        elif chart_type == "scatter":
-            fig = px.scatter(df, x=x_col, y=y_col, title=title)
+            fig = px.bar(df, x=x_col, y=y_single, title=title,
+                         color=color_col or x_col)
+
         elif chart_type == "grouped_bar":
-            y_cols = y_col.split(",") if "," in str(y_col) else [y_col]
             fig = px.bar(df, x=x_col, y=y_cols, title=title, barmode="group")
+
+        elif chart_type == "stacked_bar":
+            fig = px.bar(df, x=x_col, y=y_cols, title=title, barmode="stack")
+
+        elif chart_type == "horizontal_bar":
+            fig = px.bar(df, x=y_single, y=x_col, title=title,
+                         orientation="h", color=color_col or x_col)
+
+        elif chart_type == "line":
+            fig = px.line(df, x=x_col, y=y_cols if len(y_cols) > 1 else y_single,
+                          title=title, markers=True)
+
+        elif chart_type == "area":
+            fig = px.area(df, x=x_col, y=y_cols if len(y_cols) > 1 else y_single,
+                          title=title)
+
+        elif chart_type == "pie":
+            fig = px.pie(df, names=x_col, values=y_single, title=title)
+
+        elif chart_type == "donut":
+            fig = px.pie(df, names=x_col, values=y_single, title=title, hole=0.45)
+
+        elif chart_type == "scatter":
+            fig = px.scatter(df, x=x_col, y=y_single, title=title,
+                             color=color_col, hover_name=hover_col)
+
+        elif chart_type == "bubble":
+            # requires size column; falls back to y_single if not provided
+            fig = px.scatter(df, x=x_col, y=y_single, title=title,
+                             size=size_col or y_single,
+                             color=color_col or x_col,
+                             hover_name=hover_col,
+                             size_max=60)
+
+        elif chart_type == "heatmap":
+            # pivot: x = columns, y = rows, values = y_single
+            z_col = chart_cfg.get("z") or y_single
+            pivot = df.pivot(index=x_col, columns=color_col or df.columns[1], values=z_col)
+            import plotly.graph_objects as go
+            fig = go.Figure(data=go.Heatmap(
+                z=pivot.values,
+                x=pivot.columns.tolist(),
+                y=pivot.index.tolist(),
+                colorscale="Greens",
+            ))
+            fig.update_layout(title=title)
+
+        elif chart_type == "funnel":
+            fig = px.funnel(df, x=y_single, y=x_col, title=title)
+
+        elif chart_type == "histogram":
+            fig = px.histogram(df, x=y_single, title=title, nbins=chart_cfg.get("bins", 20))
+
+        elif chart_type == "box":
+            fig = px.box(df, x=x_col, y=y_single, title=title,
+                         color=color_col or x_col)
+
+        elif chart_type == "waterfall":
+            import plotly.graph_objects as go
+            fig = go.Figure(go.Waterfall(
+                x=df[x_col].tolist(),
+                y=df[y_single].tolist(),
+                name=y_single,
+            ))
+            fig.update_layout(title=title)
+
         else:
-            fig = px.bar(df, x=x_col, y=y_col, title=title, color=x_col)
+            # Unknown type — fall back to bar
+            st.warning(f"Unknown chart type '{chart_type}', falling back to bar chart.")
+            fig = px.bar(df, x=x_col, y=y_single, title=title, color=x_col)
 
         fig.update_layout(
             margin=dict(l=20, r=20, t=40, b=20),
-            height=350,
+            height=400,
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=-0.3),
         )
@@ -205,9 +284,8 @@ if subtitle:
 # --- Table ---
 render_dynamic_table(data, config)
 
-# --- Chart (only rendered when legacy chartType param is present) ---
-legacy_chart = config.get("_legacy_chart")
-if legacy_chart and legacy_chart.get("chartType"):
+# --- Chart ---
+chart_cfg = config.get("chart") or config.get("_legacy_chart")
+if chart_cfg:
     st.markdown("---")
-    st.markdown("**Chart**")
-    render_chart(pd.DataFrame(data), legacy_chart, title)
+    render_chart(pd.DataFrame(data), chart_cfg, title)
